@@ -171,10 +171,6 @@ Configuration InstallIIS
                 # set IIS configuration settings for the specific provider
                 $properties = @{"FilePath" = $localFile; "IgnoreCase" = 1; "Separator" = ","}
 
-                #Add-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST' -filter "system.webServer/rewrite/providers/provider[@name='$($using:rewriteProviderName)']/settings" -name "." -value @{key='FilePath';value='c:\app\stuff.txt'}
-                #Add-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST' -filter "system.webServer/rewrite/providers/provider[@name='$($using:rewriteProviderName)']/settings" -name "." -value @{key='Separator';value=','}
-                #Add-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST' -filter "system.webServer/rewrite/providers/provider[@name='$($using:rewriteProviderName)']/settings" -name "." -value @{key='IgnoreCase';value='1'}
-
                 foreach($key in $properties.keys){
                     Write-Verbose "Removing configuration if exists..."
                     Remove-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST' -filter "system.webServer/rewrite/providers/provider[@name='$($using:rewriteProviderName)']/settings" -name "." -AtElement @{key=$($key)}
@@ -193,27 +189,34 @@ Configuration InstallIIS
         Script ReWriteRules {
             DependsOn = "[Package]UrlRewrite", "[Script]AddCustomRewriteProviderToIIS", "[Script]InstallRewriteAssemblyToGac", "[Script]ConfigureRewriteProvider"
             SetScript = {
-                $current = Get-WebConfiguration /system.webServer/rewrite/allowedServerVariables | select -ExpandProperty collection | ? {$_.ElementTagName -eq "add"} | select -ExpandProperty name
-                $expected = @("HTTPS", "HTTP_X_FORWARDED_FOR", "HTTP_X_FORWARDED_PROTO", "REMOTE_ADDR")
-                $missing = $expected | where {$current -notcontains $_}
-                try {
-                    Start-WebCommitDelay 
-                    $missing | % { Add-WebConfiguration /system.webServer/rewrite/allowedServerVariables -atIndex 0 -value @{name = "$_"} -Verbose }
-                    Stop-WebCommitDelay -Commit $true 
-                } 
-                catch [System.Exception] { 
-                    $_ | Out-String
-                }
+                # this is kind of ridiculous. like i should just be able to push it a block of xml but c'est la vie.
+                # this monstrosity results in the rule xml commented above in the default web site's web.config
+                Add-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST/Default Web Site'  -filter "system.webServer/rewrite/rules" -name "." -value @{name='FileMapProviderTestRule'}
+                Set-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST/Default Web Site'  -filter "system.webServer/rewrite/rules/rule[@name='FileMapProviderTestRule']" -name "name" -value "FileMapProviderTestRule"
+                Set-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST/Default Web Site'  -filter "system.webServer/rewrite/rules/rule[@name='FileMapProviderTestRule']" -name "enabled" -value "True"
+                Set-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST/Default Web Site'  -filter "system.webServer/rewrite/rules/rule[@name='FileMapProviderTestRule']" -name "patternSyntax" -value "ECMAScript"
+                Set-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST/Default Web Site'  -filter "system.webServer/rewrite/rules/rule[@name='FileMapProviderTestRule']" -name "stopProcessing" -value "True"
+
+                Set-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST/Default Web Site'  -filter "system.webServer/rewrite/rules/rule[@name='FileMapProviderTestRule']/action" -name "type" -value "Redirect"
+                Set-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST/Default Web Site'  -filter "system.webServer/rewrite/rules/rule[@name='FileMapProviderTestRule']/action" -name "url" -value "{C:1}"
+                Set-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST/Default Web Site'  -filter "system.webServer/rewrite/rules/rule[@name='FileMapProviderTestRule']/action" -name "appendQueryString" -value "True"
+                Set-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST/Default Web Site'  -filter "system.webServer/rewrite/rules/rule[@name='FileMapProviderTestRule']/action" -name "logRewrittenUrl" -value "False"
+                Set-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST/Default Web Site'  -filter "system.webServer/rewrite/rules/rule[@name='FileMapProviderTestRule']/action" -name "redirectType" -value "Permanent"
+
+                Set-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST/Default Web Site'  -filter "system.webServer/rewrite/rules/rule[@name='FileMapProviderTestRule']/match" -name "url" -value "(.*)"
+                Set-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST/Default Web Site'  -filter "system.webServer/rewrite/rules/rule[@name='FileMapProviderTestRule']/match" -name "ignoreCase" -value "True"
+                Set-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST/Default Web Site'  -filter "system.webServer/rewrite/rules/rule[@name='FileMapProviderTestRule']/match" -name "negate" -value "False"
+
+                Add-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST/Default Web Site'  -filter "system.webServer/rewrite/rules/rule[@name='FileMapProviderTestRule']/conditions" -name "." -value @{input='{$($using:rewriteProviderName):{R:1}}';pattern='(.+)'}
+                Set-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST/Default Web Site'  -filter "system.webServer/rewrite/rules/rule[@name='FileMapProviderTestRule']/conditions" -name "logicalGrouping" -value "MatchAll"
+                Set-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST/Default Web Site'  -filter "system.webServer/rewrite/rules/rule[@name='FileMapProviderTestRule']/conditions" -name "trackAllCaptures" -value "False"
             }
             TestScript = {
-                $current = Get-WebConfiguration /system.webServer/rewrite/allowedServerVariables | select -ExpandProperty collection | select -ExpandProperty name
-                $expected = @("HTTPS", "HTTP_X_FORWARDED_FOR", "HTTP_X_FORWARDED_PROTO", "REMOTE_ADDR")
-                $result = -not @($expected| where {$current -notcontains $_}| select -first 1).Count
-                return $result
+                $found = (Get-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST/Default Web Site'  -filter "system.webServer/rewrite/rules/rule[@name='FileMapProviderTestRule']" -name "name").Length
+                return $found -gt 0
             }
             GetScript = {
-                $allowedServerVariables = Get-WebConfiguration /system.webServer/rewrite/allowedServerVariables | select -ExpandProperty collection
-                return $allowedServerVariables
+                return Get-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST/Default Web Site'  -filter "system.webServer/rewrite/rules/rule[@name='FileMapProviderTestRule']" -name "name"
             }
         }
     }
