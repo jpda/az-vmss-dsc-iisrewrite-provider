@@ -4,12 +4,13 @@ Configuration InstallIIS
     Param (
         [string] $nodeName = "localhost",
         [string] $assemblyBlobPath = "https://jpda.blob.core.windows.net/shared/Microsoft.Web.Iis.Rewrite.Providers.dll?st=2017-03-30T19%3A17%3A00Z&se=2018-03-31T19%3A17%3A00Z&sp=r&sv=2015-12-11&sr=b&sig=%2BwJWk8%2FgCnDs4LRW6pxDDl5Cde7ZeilmlROlITGMwcY%3D",
+        [string] $fileMapPath = "https://jpda.blob.core.windows.net/shared/filemap.txt",
         [string] $localAssemblyPath = "c:\app\",
         [string] $targetAssemblyName = "Microsoft.Web.Iis.Rewrite.Providers",
-        [string] $rewriteProviderName = "DbProviderSample",
-        [string] $rewriteProviderType = "DbProvider, Microsoft.Web.Iis.Rewrite.Providers, Version=7.1.761.0, Culture=neutral, PublicKeyToken=0545b0627da60a5f"
+        [string] $rewriteProviderName = "FileMapProviderSample",
+        [string] $rewriteProviderType = "FileMapProvider, Microsoft.Web.Iis.Rewrite.Providers, Version=7.1.761.0, Culture=neutral, PublicKeyToken=0545b0627da60a5f",
+        [string] $rewriteProviderFile = "https://jpda.blob.core.windows.net/shared/pathmap.txt?st=2017-04-03T17%3A15%3A00Z&se=2018-04-04T17%3A15%3A00Z&sp=r&sv=2015-12-11&sr=c&sig=2dNROSd8OkY53Ogx09dR%2Bro6dxNIxqJGerF8sZdicXc%3D"
     )
-    
     # no variables here? this seems lame
     Import-DscResource -ModuleName PSDesiredStateConfiguration
     Node $nodeName
@@ -110,21 +111,87 @@ Configuration InstallIIS
         Script AddCustomRewriteProviderToIIS {
             DependsOn = "[Package]UrlRewrite", "[Script]InstallRewriteAssemblyToGac"
             GetScript = {
-                return Get-WebConfigurationProperty  -pspath 'MACHINE/WEBROOT/APPHOST'  -filter "system.webServer/rewrite/providers" -name "." | select -ExpandProperty collection | Where-Object { $_.name -eq $using:rewriteProviderName}
+                return Get-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST' -filter "system.webServer/rewrite/providers" -name "." | select -ExpandProperty collection | Where-Object { $_.name -eq $using:rewriteProviderName}
             }
             TestScript = {
-                $configBlock = Get-WebConfigurationProperty  -pspath 'MACHINE/WEBROOT/APPHOST'  -filter "system.webServer/rewrite/providers" -name "." | select -ExpandProperty collection | Where-Object { $_.name -eq $using:rewriteProviderName}
-                Write-Verbose $configBlock.Length
+                $configBlock = Get-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST' -filter "system.webServer/rewrite/providers" -name "." | select -ExpandProperty collection | Where-Object { $_.name -eq $using:rewriteProviderName}
                 return $configBlock.Length -gt 0
             }
             SetScript = {
-                Remove-WebConfigurationProperty  -pspath 'MACHINE/WEBROOT/APPHOST'  -filter "system.webServer/rewrite/providers" -name "." -AtElement @{name='$using:rewriteProviderName'}
-                Add-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST'  -filter "system.webServer/rewrite/providers" -name "." -value @{name='$using:rewriteProviderName';type='$using:rewriteProviderType'}
-                Add-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST'  -filter "system.webServer/rewrite/providers/provider[@name='$using:rewriteProviderName']/settings" -name "." -value @{key='ConnectionString';value='xon'}
+                # Remove-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST' -filter "system.webServer/rewrite/providers" -name "." -AtElement @{name = $using:rewriteProviderName}
+                Add-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST' -filter "system.webServer/rewrite/providers" -name "." -value @{name = $using:rewriteProviderName; type = $using:rewriteProviderType}
             }
         }
+        Script ConfigureRewriteProvider {
+            DependsOn = "[Package]UrlRewrite", "[Script]InstallRewriteAssemblyToGac", "[Script]AddCustomRewriteProviderToIIS"
+            GetScript = {
+                return Get-WebConfigurationProperty  -pspath 'MACHINE/WEBROOT/APPHOST'  -filter "system.webServer/rewrite/providers" -name "." | Select-Object -ExpandProperty collection | Where-Object { $_.name -eq $using:rewriteProviderName}
+            }
+            TestScript = {
+                $rewriteProviderFileUri = new-object System.Uri($using:rewriteProviderFile)
+                $fileName = [System.IO.Path]::GetFileName($rewriteProviderFileUri.LocalPath)
+                $localFilePath = [System.IO.Path]::Combine($using:localAssemblyPath, $fileName)
+                $fileExists = Test-Path($localFilePath)
+                if (!$fileExists) { return $false; }
+
+                $properties = @{"FilePath" = $localFilePath; "IgnoreCase" = 1; "Separator" = ","}
+
+                $provider = Get-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST' -filter "system.webServer/rewrite/providers" -name "." | Select-Object -ExpandProperty collection | Where-Object { $_.name -eq $using:rewriteProviderName}
+                Write-Verbose "Getting provider with name $using:rewriteProviderName..."
+                if ($provider -eq $null) { return $false; }
+                
+                Write-Verbose "Found $($provider.name), checking configuration..."
+                # Write-Verbose "found $($provider | select-object -ExpandProperty settings | out-string) ok"
+                foreach ($key in $properties.keys) {
+                    Write-Verbose "Checking for key $key..."
+                    $prop = $provider | Select-Object -ExpandProperty settings | Select-Object -ExpandProperty collection | Where-Object { $_.key -eq $key }
+                    if ($prop -eq $null) {
+                        Write-Verbose "$key doesn't exist! Exiting..."
+                        return $false; 
+                    }
+                    Write-Verbose "Found $($prop.value) in configuration. Desired value for $key is $($properties[$key])"
+                    if ($prop.value -ne $properties[$key]) { 
+                        Write-Verbose "$key values don't match"
+                        return $false; 
+                    }
+                }
+                Write-Verbose "Configuration all good, no need to reapply"
+                return $true;
+            }
+            SetScript = {
+                # download settings file
+                $rewriteProviderFileUri = new-object System.Uri($using:rewriteProviderFile)
+                $fileName = [System.IO.Path]::GetFileName($rewriteProviderFileUri.LocalPath)
+                $localFile = [System.IO.Path]::Combine($using:localAssemblyPath, $fileName)
+                New-Item -ItemType Directory $using:localAssemblyPath -Force
+                Invoke-WebRequest -Uri $rewriteProviderFileUri -OutFile $localFile
+                
+                Write-Verbose "Saved config file to $localFile, now configuring IIS: $using:rewriteProviderName..."
+                
+                # set IIS configuration settings for the specific provider
+                $properties = @{"FilePath" = $localFile; "IgnoreCase" = 1; "Separator" = ","}
+
+                #Add-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST' -filter "system.webServer/rewrite/providers/provider[@name='$($using:rewriteProviderName)']/settings" -name "." -value @{key='FilePath';value='c:\app\stuff.txt'}
+                #Add-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST' -filter "system.webServer/rewrite/providers/provider[@name='$($using:rewriteProviderName)']/settings" -name "." -value @{key='Separator';value=','}
+                #Add-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST' -filter "system.webServer/rewrite/providers/provider[@name='$($using:rewriteProviderName)']/settings" -name "." -value @{key='IgnoreCase';value='1'}
+
+                foreach($key in $properties.keys){
+                    Write-Verbose "Removing configuration if exists..."
+                    Remove-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST' -filter "system.webServer/rewrite/providers/provider[@name='$($using:rewriteProviderName)']/settings" -name "." -AtElement @{key=$($key)}
+                    Write-Verbose "Adding config for $($key) with $($properties[$key])"
+                    Add-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST' -filter "system.webServer/rewrite/providers/provider[@name='$($using:rewriteProviderName)']/settings" -name "." -value @{key = $($key); value = $($properties[$key])} -Verbose
+                }
+            }
+        }
+        #<rule name="FileMapProviderTest" stopProcessing="true">
+        #<match url="(.*)" />
+        #<conditions>
+        #    <add input="{FileMap:{R:1}}" pattern="(.+)" />
+        #</conditions>
+        #<action type="Redirect" url="{C:1}" />
+        #</rule>
         Script ReWriteRules {
-            DependsOn = "[Package]UrlRewrite", "[Script]AddCustomRewriteProviderToIIS", "[Script]InstallRewriteAssemblyToGac"
+            DependsOn = "[Package]UrlRewrite", "[Script]AddCustomRewriteProviderToIIS", "[Script]InstallRewriteAssemblyToGac", "[Script]ConfigureRewriteProvider"
             SetScript = {
                 $current = Get-WebConfiguration /system.webServer/rewrite/allowedServerVariables | select -ExpandProperty collection | ? {$_.ElementTagName -eq "add"} | select -ExpandProperty name
                 $expected = @("HTTPS", "HTTP_X_FORWARDED_FOR", "HTTP_X_FORWARDED_PROTO", "REMOTE_ADDR")

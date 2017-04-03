@@ -23,9 +23,6 @@
     "powershelldscZip": {
       "value": "/DSC/IISInstall.ps1.zip"
     },
-    "webDeployPackage": {
-      "value": "/WebDeploy/DefaultASPWebApp.v1.0.zip"
-    },
     "powershelldscUpdateTagVersion": {
       "value": "1.0"
     }
